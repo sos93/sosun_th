@@ -1,0 +1,150 @@
+function fetchEGPData() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var deptId = "002180900"; // กรมแพทย์ทหารเรือ
+  var announcementTypes = ["P0", "15", "B0", "D0", "W0", "D1", "W1", "D2", "W2"];
+  
+  // เพิ่มหัวคอลัมน์ใหม่
+  sheet.appendRow(["เลขที่โครงการ", "ชื่อโครงการ", "งบประมาณ", "สถานะโครงการ", "Link", "วันที่ประกาศ", "ประเภทประกาศ", "วิธีจัดซื้อจัดจ้าง", "ผู้ได้รับการคัดเลือก", "เป็นเงินทั้งสิ้น", "ประกาศขึ้นเว็บวันที่"]);
+  
+  for (var i = 0; i < announcementTypes.length; i++) {
+    var url = "http://process3.gprocurement.go.th/EPROCRssFeedWeb/egpannouncerss.xml?deptId=" + deptId + "&anounceType=" + announcementTypes[i];
+    var response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    var xml = response.getContentText();
+    
+    try {
+      var document = XmlService.parse(xml);
+      var root = document.getRootElement();
+      var channel = root.getChild('channel');
+      var items = channel.getChildren('item');
+      
+      for (var j = 0; j < items.length; j++) {
+        var item = items[j];
+        var title = decodeThaiText(item.getChild('title').getText());
+        var link = item.getChild('link').getText();
+        var description = decodeThaiText(item.getChild('description').getText());
+        var pubDate = new Date(item.getChild('pubDate').getText());
+        
+        // แยกข้อมูลจาก title
+        var titleParts = title.split(/\s+/);
+        var projectId = titleParts[0];
+        var projectName = titleParts.slice(1).join(' ');
+        
+        // ดึงข้อมูลงบประมาณและสถานะโครงการจาก description
+        var budget = extractBudget(description);
+        var status = extractStatus(description);
+        
+        // ดึงข้อมูลเพิ่มเติมจาก link
+        var additionalInfo = fetchAdditionalInfo(link);
+        
+        sheet.appendRow([
+          projectId, 
+          projectName, 
+          budget, 
+          status, 
+          link, 
+          pubDate,
+          getAnnouncementType(announcementTypes[i]),
+          additionalInfo.procurementMethod,
+          additionalInfo.selectedBidder,
+          additionalInfo.totalAmount,
+          additionalInfo.announcementDate
+        ]);
+      }
+    } catch (e) {
+      Logger.log("Error parsing XML: " + e.toString());
+    }
+  }
+}
+
+function decodeThaiText(text) {
+  // ส่งคืนข้อความโดยตรง โดยไม่มีการแปลงใดๆ
+  return text;
+}
+
+// ตัวอย่างการใช้งาน
+function testDecodeThaiText() {
+  var thaiText = "ทดสอบภาษาไทย";
+  var decodedText = decodeThaiText(thaiText);
+  Logger.log(decodedText);
+}
+
+function extractBudget(description) {
+  var budgetMatch = description.match(/งบประมาณ\s*:\s*([\d,]+(\.\d{2})?)\s*บาท/);
+  return budgetMatch ? budgetMatch[1] : "ไม่ระบุ";
+}
+
+function extractStatus(description) {
+  var statusMatch = description.match(/สถานะโครงการ\s*:\s*([^\n]+)/);
+  return statusMatch ? statusMatch[1].trim() : "ไม่ระบุ";
+}
+
+function getAnnouncementType(code) {
+  var types = {
+    "P0": "แผนการจัดซื้อจัดจ้าง",
+    "15": "ประกาศราคากลาง",
+    "B0": "ร่างเอกสารประกวดราคา (e-Bidding) และร่างเอกสารซื้อหรือจ้างด้วยวิธีสอบราคา",
+    "D0": "ประกาศเชิญชวน",
+    "W0": "ประกาศรายชื่อผู้ชนะการเสนอราคา / ประกาศผู้ได้รับการคัดเลือก",
+    "D1": "ยกเลิกประกาศเชิญชวน",
+    "W1": "ยกเลิกประกาศรายชื่อผู้ชนะการเสนอราคา / ประกาศผู้ได้รับการคัดเลือก",
+    "D2": "เปลี่ยนแปลงประกาศเชิญชวน",
+    "W2": "เปลี่ยนแปลงประกาศรายชื่อผู้ชนะการเสนอราคา"
+  };
+  return types[code] || "ไม่ระบุ";
+}
+
+function fetchAdditionalInfo(url) {
+  var response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+  var content = response.getContentText();
+  
+  return {
+    procurementMethod: extractProcurementMethod(content),
+    selectedBidder: extractSelectedBidder(content),
+    totalAmount: extractTotalAmount(content),
+    announcementDate: extractAnnouncementDate(content)
+  };
+}
+
+function extractProcurementMethod(content) {
+  var methodMatch = content.match(/วิธี(เฉพาะเจาะจง|คัดเลือก|ประกาศเชิญชวนทั่วไป)/);
+  return methodMatch ? methodMatch[0] : "ไม่ระบุ";
+}
+
+function extractSelectedBidder(content) {
+  var bidderMatch = content.match(/ผู้ได้รับการคัดเลือก\s*:\s*([^\n]+)/);
+  return bidderMatch ? bidderMatch[1].trim() : "ไม่ระบุ";
+}
+
+function extractTotalAmount(content) {
+  var amountMatch = content.match(/เป็นเงินทั้งสิ้น\s*([\d,]+(\.\d{2})?)\s*บาท/);
+  return amountMatch ? amountMatch[1] : "ไม่ระบุ";
+}
+
+function extractAnnouncementDate(content) {
+  var dateMatch = content.match(/ประกาศขึ้นเว็บวันที่\s*(\d{2}\/\d{2}\/\d{4})/);
+  return dateMatch ? dateMatch[1] : "ไม่ระบุ";
+}
+
+function removeDuplicates() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getActiveSheet();
+  var data = sheet.getDataRange().getValues();
+  var newData = [];
+  var seen = {};
+  
+  for (var i = 0; i < data.length; i++) {
+    var row = data[i];
+    var key = row[0] + "|" + row[1]; // ใช้เลขที่โครงการและชื่อโครงการเป็น unique key
+    if (!seen[key]) {
+      newData.push(row);
+      seen[key] = true;
+    }
+  }
+  
+  sheet.clear();
+  sheet.getRange(1, 1, newData.length, newData[0].length).setValues(newData);
+}
+
+function main() {
+  fetchEGPData();
+  removeDuplicates();
+}
